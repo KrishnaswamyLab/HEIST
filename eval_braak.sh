@@ -13,4 +13,4 @@ cd /home/hm638/SCGFM
 conda init
 conda activate SCGFM
 
-python eval_braak.py --model sea_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt --num_epochs 500 --num_layers 5
+python eval_braak.py --model sea_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt --num_epochs 500 --wd 1e-2

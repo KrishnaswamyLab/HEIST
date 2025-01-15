@@ -37,8 +37,7 @@ def representation_quality_metrics(
     ch_score = calinski_harabasz_score(X_np, labels)
 
     corr_matrix, _ = safe_corrcoef(X_np)  # shape = (d, d)
-    d = X_np.shape[1]
-    import pdb; pdb.set_trace()
+    d = corr_matrix.shape[0]
     # Extract the off-diagonal entries
     off_diag_indices = np.triu_indices(d, k=1)
     avg_abs_correlation = np.mean(np.abs(corr_matrix[off_diag_indices]))
