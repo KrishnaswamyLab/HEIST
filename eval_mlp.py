@@ -106,12 +106,10 @@ if __name__ == '__main__':
     print(args)
     print("Loading graphs")
     # _high_level_graphs = torch.load('data/space-gm/{}_graphs_projection.pt'.format(args.data_name))
-    _high_level_graphs = torch.load('data/space-gm/{}_graphs_anchor_ranknorm_pe.pt'.format(args.data_name))
+    _high_level_graphs = torch.load('data/space-gm/{}_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt'.format(args.data_name))
     if(args.data_name == "charville"):
-        patient_c = ['c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004']
         split = [["c004"], ["c003"]]
     elif(args.data_name == "upmc"):
-        patient_c = ['c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c001', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c002', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c003', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c004', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c005', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c006', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007', 'c007']
         split = [["c006", "c007"], ["c004", "c005"]]
 
     indices = []
@@ -122,7 +120,7 @@ if __name__ == '__main__':
                 continue
             indices.append(i)
     _high_level_graphs = [_high_level_graphs[i] for i in indices]
-    patient_c = [patient_c[i] for i in indices]
+    patient_c = [_high_level_graph.region_id.split("_")[1] for _high_level_graph in _high_level_graphs]
     labels = torch.LongTensor([getattr(i, args.label_name) for i in _high_level_graphs]).to(args.device)
     print(torch.bincount(labels))
     embeddings = []
@@ -156,19 +154,5 @@ if __name__ == '__main__':
         best_acc, best_aoc_roc = train(model, train_loader, val_loader, test_loader)
         roc_scores.append(best_aoc_roc.item())
     roc_scores = np.array(roc_scores)
-    # print(f"Best acc:{best_acc}, Best aoc roc:{best_aoc_roc}.")
     print(f"Mean:{roc_scores.mean()}, Std:{roc_scores.std()}.")
     print(f"Max:{roc_scores.max()}.")
-    args.low_level_pool = 'sum'
-    args.high_level_pool = 'sum'
-    args.best_acc = best_acc
-    args.best_aoc_roc = best_aoc_roc
-    args_dict = vars(args)
-
-    # with open("data/{}/{}_best.json".format(args.data_name, args.label_name), "r") as json_file:
-    #     best_args = json.load(json_file)
-    # if best_args['best_aoc_roc'] < args_dict['best_aoc_roc']:
-    #     print("Better accuracy.")
-    #     args_json = json.dumps(args_dict, indent=4)
-    #     with open("data/space-gm/{}_{}_best.json".format(args.data_name, args.label_name), "w") as json_file:
-    #         json_file.write(args_json)
