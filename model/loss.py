@@ -1,11 +1,10 @@
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
 import numpy as np
-from torch_geometric.nn.pool import global_add_pool, global_mean_pool
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+from torch_geometric.nn.pool import global_add_pool
 
 def aucpr_hinge_loss(y_pred, y_true, margin=1.0):
     """
@@ -209,3 +208,54 @@ def mae_loss_cell(high_emb, low_emb, decoded_high, decoded_low, high_mask, low_m
         high_recon_loss = 0
     low_recon_loss = (1-F.cosine_similarity(low_emb*low_mask,decoded_low*low_mask)).sum()/low_mask.sum()
     return (high_recon_loss + 0.01*low_recon_loss)/2
+
+def contrastive_loss_cell_single_view(cell_types, high_emb, low_emb, N):
+    num_cells = cell_types.shape[0]
+    device = high_emb.device
+
+    arange = torch.arange(num_cells, device=device)
+    positive_indices = []
+    negative_indices = []
+
+    for i in range(num_cells):
+        current_type = cell_types[i]
+
+        pos_idx = torch.where((cell_types == current_type) & (arange != i))[0]
+        if len(pos_idx) > 0:
+            positive_indices.append(pos_idx[torch.randint(0, len(pos_idx), (1,))].item())
+        else:
+            positive_indices.append(i)
+
+        neg_idx = torch.where(cell_types != current_type)[0]
+        if len(neg_idx) > 0:
+            negative_indices.append(neg_idx[torch.randint(0, len(neg_idx), (N,))].tolist())
+        else:
+            negative_indices.append([])
+
+    positive_indices = torch.LongTensor(positive_indices).to(device)
+    negative_indices = torch.LongTensor(negative_indices).to(device)
+
+    positive_similarities_high = F.cosine_similarity(high_emb, high_emb[positive_indices]).clamp(min=1e-6)
+    negative_similarities_high = F.cosine_similarity(high_emb.unsqueeze(1), high_emb[negative_indices], dim=-1)
+    high_level_loss = -torch.mean(
+        torch.log(positive_similarities_high + 1e-8) - torch.logsumexp(negative_similarities_high, dim=-1)
+    )
+
+    pooled_low_level = F.normalize(low_emb)
+    positive_similarities_cross = F.cosine_similarity(pooled_low_level, high_emb[positive_indices]).clamp(min=1e-6)
+    negative_similarities_cross = F.cosine_similarity(
+        pooled_low_level.unsqueeze(1), high_emb[negative_indices], dim=-1
+    )
+    cross_level_loss = -torch.mean(
+        torch.log(positive_similarities_cross + 1e-8) - torch.logsumexp(negative_similarities_cross, dim=-1)
+    )
+
+    positive_similarities_low = F.cosine_similarity(pooled_low_level, pooled_low_level[positive_indices]).clamp(min=1e-6)
+    negative_similarities_low = F.cosine_similarity(
+        pooled_low_level.unsqueeze(1), pooled_low_level[negative_indices], dim=-1
+    )
+    low_level_loss = -torch.mean(
+        torch.log(positive_similarities_low + 1e-8) - torch.logsumexp(negative_similarities_low, dim=-1)
+    )
+
+    return (high_level_loss + cross_level_loss + low_level_loss) / num_cells

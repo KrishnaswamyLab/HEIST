@@ -7,9 +7,20 @@ from torch_geometric.utils import to_networkx, subgraph, add_self_loops, k_hop_s
 from torch_geometric.data import Data, Batch
 from torch_geometric.loader import DataLoader
 import random
+from torch.utils.data.distributed import DistributedSampler
+import networkx as nx
+
 import os
  
-# Getting all memory using os.popen()
+def shuffle_node_indices(data):
+    perm = torch.randperm(data.num_nodes)  # Random permutation of node indices
+    data.X = data.X[perm]  # Shuffle node features
+    # Shuffle edge indices
+    row, col = data.edge_index
+    row = perm[row]
+    col = perm[col]
+    data.edge_index = torch.stack([row, col], dim=0)
+    return data, perm
 
 class CustomDataset(Dataset):
     def __init__(self, X, y):
@@ -36,29 +47,36 @@ class EmbeddingDataset(Dataset):
         label = self.labels[idx]
         return embedding, label
 
-def create_dataloader(graphs, batch_size, device):
+def create_dataloader(graphs, batch_size, permute = True):
     high_level_graph = graphs[0]
+    if 'weight' not in high_level_graph:
+        high_level_graph.weight = high_level_graph.distance
     num_nodes = high_level_graph.num_nodes
-    transform = T.AddRandomWalkPE(walk_length=2, attr_name='pe')
-    high_level_graph = transform(high_level_graph)
-    transform = T.AddRandomWalkPE(walk_length=1, attr_name='pe')
-    low_level_graphs = [transform(i) for i in graphs[1:]]
-    for graph in low_level_graphs:
-        if 'weight' not in graph or graph.edge_attr is None:
-            # Add default edge weight of 1.0 for each edge if 'weight' is missing
-            num_edges = graph.edge_index.size(1)
-            graph.edge_attr = torch.ones((num_edges, 1), dtype=torch.float)
+    # transform = T.AddLaplacianEigenvectorPE(k=pe_dim, attr_name='pe')
+    # high_level_graph = transform(high_level_graph)
+    # transform = T.AddLaplacianEigenvectorPE(k=pe_dim, attr_name='pe')
+    low_level_graphs = graphs[1:]#[transform(i) for i in graphs[1:]]
+    for idx in range(len(low_level_graphs)):
+        if 'weight' not in low_level_graphs[idx] or low_level_graphs[idx].edge_attr is None:
+            num_edges = low_level_graphs[idx].edge_index.size(1)
+            low_level_graphs[idx].weight = torch.ones((num_edges, 1), dtype=torch.float)
+
+    if permute:
+        high_level_graph, perm = shuffle_node_indices(high_level_graph)
+
     G = to_networkx(high_level_graph, to_undirected=True)
 
     num_partitions = num_nodes//batch_size
-    adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
-    _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
+    if(num_partitions):
+        adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
+        _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
 
     # Step 4: Create partitions from node_partitions
-    partitions = [[] for _ in range(num_partitions)]
-    for node_idx, part_idx in enumerate(node_partitions):
-        partitions[part_idx].append(node_idx)
-
+        partitions = [[] for _ in range(num_partitions)]
+        for node_idx, part_idx in enumerate(node_partitions):
+            partitions[part_idx].append(node_idx)
+    else:
+        partitions = [list(range(num_nodes))]
     # Step 5: Create high-level subgraphs and low-level batches for each partition
     partitioned_batches = []
 
@@ -69,24 +87,106 @@ def create_dataloader(graphs, batch_size, device):
 
         high_level_subgraph = Data(
             X=high_level_graph.X[partition_node_indices],
-            pe=high_level_graph.pe[partition_node_indices],
+            # pe=high_level_graph.pe[partition_node_indices],
             edge_index=edge_index_partition,
             y=high_level_graph.y[partition_node_indices] if high_level_graph.y is not None else None,
             num_nodes=len(partition_node_indices)
         )
 
         # Collect corresponding low-level graphs for each node in the partition
-        corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in partition_node_indices]
+        if permute:
+            corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in perm[partition_node_indices]]
+        else:
+            corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in partition_node_indices]
 
         # Create a batch from low-level graphs
         low_level_batch = Batch.from_data_list(corresponding_low_level_graphs)
-        if low_level_batch.pe.shape[0] == 2148:
-            import pdb; pdb.set_trace()
         # Store high-level subgraph and corresponding low-level batch
         partitioned_batches.append((high_level_subgraph, low_level_batch, partition_node_indices))
 
     # Step 6: Define DataLoader for batched subgraphs
     batch_size = 1
     dataloader = DataLoader(partitioned_batches, batch_size=batch_size, shuffle=True)
+
+    return dataloader
+
+
+def create_dataloader_ddp(graphs, batch_size, rank, world_size, permute=True):
+    """
+    Creates a PyTorch DataLoader for distributed training with PyTorch's DistributedDataParallel (DDP).
+    
+    Args:
+        graphs (list): List of PyG graphs [high_level_graph, low_level_graphs].
+        batch_size (int): Number of nodes per partition.
+        rank (int): Process rank in DDP.
+        world_size (int): Total number of processes.
+        permute (bool): Whether to shuffle node indices before partitioning.
+
+    Returns:
+        DataLoader: PyTorch DataLoader for the partitioned subgraphs.
+    """
+
+    # Extract high-level and low-level graphs
+    high_level_graph = graphs[0]
+    num_nodes = high_level_graph.num_nodes
+    low_level_graphs = graphs[1:]
+
+    # Assign default edge weights if missing
+    for idx in range(len(low_level_graphs)):
+        if 'weight' not in low_level_graphs[idx] or low_level_graphs[idx].edge_attr is None:
+            num_edges = low_level_graphs[idx].edge_index.size(1)
+            low_level_graphs[idx].weight = torch.ones((num_edges, 1), dtype=torch.float)
+
+    # Shuffle node indices if required
+    if permute:
+        high_level_graph, perm = shuffle_node_indices(high_level_graph)
+
+    # Convert high-level graph to NetworkX for partitioning
+    G = to_networkx(high_level_graph, to_undirected=True)
+
+    # Partitioning using Metis
+    num_partitions = num_nodes // batch_size
+    adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
+    _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
+
+    # Create partitions
+    partitions = [[] for _ in range(num_partitions)]
+    for node_idx, part_idx in enumerate(node_partitions):
+        partitions[part_idx].append(node_idx)
+
+    # Create high-level subgraphs and low-level batches for each partition
+    partitioned_batches = []
+    for partition_node_indices in partitions:
+        partition_node_indices = torch.tensor(partition_node_indices, dtype=torch.long)
+        edge_index_partition, _ = subgraph(partition_node_indices, high_level_graph.edge_index, relabel_nodes=True)
+
+        high_level_subgraph = Data(
+            X=high_level_graph.X[partition_node_indices],
+            edge_index=edge_index_partition,
+            y=high_level_graph.y[partition_node_indices] if high_level_graph.y is not None else None,
+            num_nodes=len(partition_node_indices)
+        )
+
+        # Assign corresponding low-level graphs
+        if permute:
+            corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in perm[partition_node_indices]]
+        else:
+            corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in partition_node_indices]
+        try:
+        # Create a batch from low-level graphs
+            low_level_batch = Batch.from_data_list(corresponding_low_level_graphs)
+        except KeyError as e:
+            # print(f"[Rank {rank}] Caught KeyError in low-level batch creation: {e}", flush=True)
+            # print(f"[Rank {rank}] Low-level graphs: {corresponding_low_level_graphs}", flush=True)
+            # raise  
+            raise
+        # Store high-level subgraph and corresponding low-level batch
+        partitioned_batches.append((high_level_subgraph, low_level_batch, partition_node_indices))
+
+    # Use DistributedSampler to distribute data across GPUs
+    sampler = DistributedSampler(partitioned_batches, num_replicas=world_size, rank=rank, shuffle=True)
+
+    # Create DataLoader with batch_size=1 (each batch is a partition)
+    dataloader = DataLoader(partitioned_batches, batch_size=1, shuffle=False, sampler=sampler)
 
     return dataloader

@@ -7,10 +7,18 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import normalized_mutual_info_score
     
 if __name__ == '__main__':
-    files = ["data/sea_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt",
-             "data/space-gm/charville_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt",
-             "data/space-gm/dfci_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt", 
-             "data/space-gm/upmc_graphs_3M_attention_anchor_pe_ranknorm_cross_blending.pt",
+    files = ["data/sea_graphs_3M_attention_anchor_pe_ranknorm_cross_blending_orthogonal.pt",
+             "data/sea_graphs_3M_attention_anchor_ranknorm_pe_wavelet_blending_orthogonal.pt",
+             "data/sea_graphs_3M_attention_laplacian_pe_cross_blending_orthogonal.pt",
+             "data/space-gm/charville_graphs_3M_attention_anchor_pe_ranknorm_cross_blending_orthogonal.pt",
+             "data/space-gm/dfci_graphs_3M_attention_anchor_pe_ranknorm_cross_blending_orthogonal.pt",
+             "data/space-gm/upmc_graphs_3M_attention_anchor_pe_ranknorm_cross_blending_orthogonal.pt",
+             "data/space-gm/charville_graphs_3M_attention_anchor_ranknorm_pe_wavelet_blending_orthogonal.pt",
+             "data/space-gm/dfci_graphs_3M_attention_anchor_ranknorm_pe_wavelet_blending_orthogonal.pt",
+             "data/space-gm/upmc_graphs_3M_attention_anchor_ranknorm_pe_wavelet_blending_orthogonal.pt",
+             "data/space-gm/charville_graphs_3M_attention_laplacian_pe_cross_blending_orthogonal.pt",
+             "data/space-gm/dfci_graphs_3M_attention_laplacian_pe_cross_blending_orthogonal.pt",
+             "data/space-gm/upmc_graphs_3M_attention_laplacian_pe_cross_blending_orthogonal.pt",
              ]
     for saved_file in files:
         print(saved_file)
