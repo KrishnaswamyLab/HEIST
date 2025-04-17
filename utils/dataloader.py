@@ -9,7 +9,7 @@ from torch_geometric.loader import DataLoader
 import random
 from torch.utils.data.distributed import DistributedSampler
 import networkx as nx
-
+import math
 import os
  
 def shuffle_node_indices(data):
@@ -145,7 +145,7 @@ def create_dataloader_ddp(graphs, batch_size, rank, world_size, permute=True):
     G = to_networkx(high_level_graph, to_undirected=True)
 
     # Partitioning using Metis
-    num_partitions = num_nodes // batch_size
+    num_partitions = math.ceil(num_nodes / batch_size)
     adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
     _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
 

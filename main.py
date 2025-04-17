@@ -33,13 +33,15 @@ def print_ram_usage():
 
 parser = ArgumentParser(description="SCGFM")
 parser.add_argument('--data_dir', type=str, default = 'data/pretraining/', help="Directory where the raw data is stored")
-parser.add_argument('--pe_dim', type=int, default= 32, help="Dimension of the positional encodings")
+parser.add_argument('--pe_dim', type=int, default= 128, help="Dimension of the positional encodings")
 parser.add_argument('--init_dim', type=int, default= 128, help="Hidden dim for the MLP")
 parser.add_argument('--hidden_dim', type=int, default= 128, help="Hidden dim for the MLP")
-parser.add_argument('--output_dim', type=int, default= 64, help="Output dim for the MLP")
+parser.add_argument('--output_dim', type=int, default= 128, help="Output dim for the MLP")
 parser.add_argument('--blending', action='store_true')
+parser.add_argument('--cross_message_passing', action='store_true')
 parser.add_argument('--anchor_pe', action='store_true')
 parser.add_argument('--num_layers', type=int, default= 10, help="Number of MLP layers")
+parser.add_argument('--pe', action='store_true')
 parser.add_argument('--num_heads', type=int, default= 8, help="Number of transformer heads")
 parser.add_argument('--batch_size', type=int, default= 128, help="Batch size")
 parser.add_argument('--graph_idx', type=int, default= 0, help="Batch size")
@@ -123,7 +125,8 @@ if __name__ == '__main__':
     train_idx, val_idx = train_test_split(np.arange(len(graphs_list)), test_size = 0.2, random_state = 42)
     model_path = f"saved_models/model_6M_attention_anchor_pe_cross_attention_blending_orthogonal_sea_only_moe.pth"
     print(args)
-    model = GraphEncoder(args.anchor_pe, args.pe_dim, args.init_dim, args.hidden_dim, args.output_dim, args.num_layers, args.num_heads, args.blending).to(args.device)
+    model = GraphEncoder(args.pe_dim, args.init_dim, args.hidden_dim, args.output_dim, 
+                            args.num_layers, args.num_heads, args.cross_message_passing, args.pe, args.anchor_pe, args.blending).to(args.device)
     model.apply(initialize_weights)
     decoder = GIN_decoder(args.output_dim, args.output_dim).to(args.device)
     decoder.apply(initialize_weights)

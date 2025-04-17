@@ -151,6 +151,9 @@ def cca_loss(z1, z2, lambd=0.5):
         return loss
 
 def contrastive_loss_cell(cell_types, high_emb, low_level_batch, low_emb, N):
+    high_emb = F.normalize(high_emb, p=2, dim=-1)
+    low_emb = F.normalize(low_emb, p=2, dim=-1)
+
     num_cells = cell_types.shape[0]
     device = high_emb.device
 
@@ -175,29 +178,40 @@ def contrastive_loss_cell(cell_types, high_emb, low_level_batch, low_emb, N):
 
     positive_indices = torch.LongTensor(positive_indices).to(device)
     negative_indices = torch.LongTensor(negative_indices).to(device)
-
+    
     positive_similarities_high = F.cosine_similarity(high_emb, high_emb[positive_indices]).clamp(min=1e-6)
     negative_similarities_high = F.cosine_similarity(high_emb.unsqueeze(1), high_emb[negative_indices], dim=-1)
-    high_level_loss = -torch.mean(
-        torch.log(positive_similarities_high + 1e-8) - torch.logsumexp(negative_similarities_high, dim=-1)
-    )
+    # high_level_loss = -torch.mean(
+    #     torch.log(positive_similarities_high + 1e-8) - torch.logsumexp(negative_similarities_high, dim=-1)
+    # )
+    log_pos = torch.log(positive_similarities_high + 1e-8)
+    lse_neg = torch.logsumexp(negative_similarities_high, dim=-1).clamp(max=30)  # ~exp(30)=1e13
+    high_level_loss = -torch.mean(log_pos - lse_neg)
+
 
     pooled_low_level = F.normalize(global_add_pool(low_emb, low_level_batch.batch))
     positive_similarities_cross = F.cosine_similarity(pooled_low_level, high_emb[positive_indices]).clamp(min=1e-6)
     negative_similarities_cross = F.cosine_similarity(
         pooled_low_level.unsqueeze(1), high_emb[negative_indices], dim=-1
     )
-    cross_level_loss = -torch.mean(
-        torch.log(positive_similarities_cross + 1e-8) - torch.logsumexp(negative_similarities_cross, dim=-1)
-    )
+    los_pos_cross = torch.log(positive_similarities_cross + 1e-8)
+    lse_neg_cross = torch.logsumexp(negative_similarities_cross, dim=-1).clamp(max=30)
+    cross_level_loss = -torch.mean(los_pos_cross - lse_neg_cross)
+    # cross_level_loss = -torch.mean(
+    #     torch.log(positive_similarities_cross + 1e-8) - torch.logsumexp(negative_similarities_cross, dim=-1)
+    # )
 
     positive_similarities_low = F.cosine_similarity(pooled_low_level, pooled_low_level[positive_indices]).clamp(min=1e-6)
     negative_similarities_low = F.cosine_similarity(
         pooled_low_level.unsqueeze(1), pooled_low_level[negative_indices], dim=-1
     )
-    low_level_loss = -torch.mean(
-        torch.log(positive_similarities_low + 1e-8) - torch.logsumexp(negative_similarities_low, dim=-1)
-    )
+    log_pos_low = torch.log(positive_similarities_low + 1e-8)
+    lse_neg_low = torch.logsumexp(negative_similarities_low, dim=-1).clamp(max=30)  # ~exp(30)=1e13
+    low_level_loss = -torch.mean(log_pos_low - lse_neg_low)
+
+    # low_level_loss = -torch.mean(
+    #     torch.log(positive_similarities_low + 1e-8) - torch.logsumexp(negative_similarities_low, dim=-1)
+    # )
 
     return (high_level_loss + cross_level_loss + low_level_loss) / num_cells
 

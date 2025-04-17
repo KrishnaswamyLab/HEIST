@@ -1,3 +1,4 @@
+from tracemalloc import start
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -9,7 +10,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+from torchinfo import summary
+import logging
 from utils.dataloader import create_dataloader_ddp
 from model.model import GraphEncoder, GIN_decoder
 from model.loss import contrastive_loss_cell, mae_loss_cell
@@ -19,12 +21,16 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch_geometric.nn as pyg_nn
 from tqdm import tqdm
+import time
 import numpy as np
 from argparse import ArgumentParser
 import gc
 from sklearn.model_selection import train_test_split
 from glob import glob
 import socket
+from datetime import timedelta
+
+torch.autograd.set_detect_anomaly(True)
 
 def find_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -32,19 +38,16 @@ def find_free_port():
         return s.getsockname()[1] 
 
 def setup(rank, world_size):
-    """Initialize distributed training setup."""
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "29500"  # Set a free port for communication
     os.environ["NCCL_IB_DISABLE"] = "1"
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group("nccl",  timeout=timedelta(minutes=180), rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 def cleanup():
-    """Clean up the distributed training setup."""
     dist.destroy_process_group()
 
 def initialize_weights(layer):
-    """Initialize model weights with Xavier and Kaiming uniform initialization."""
     if isinstance(layer, nn.Linear):
         nn.init.xavier_uniform_(layer.weight)
         if layer.bias is not None:
@@ -61,7 +64,7 @@ def initialize_weights(layer):
             nn.init.constant_(layer.bias, 0)
 
 
-def validate(rank, world_size, model, decoder, val_idx, all_files, args):
+def validate(rank, world_size, model, decoder, val_idx, all_files, args):# -> Any:
     device = torch.device(f"cuda:{rank}")
     model.eval()
     decoder.eval()
@@ -69,13 +72,14 @@ def validate(rank, world_size, model, decoder, val_idx, all_files, args):
     total_val_loss = torch.tensor(0.0, device=device)
 
     with torch.no_grad():
-        for graph_idx in val_idx:
+        for graph_idx in tqdm(val_idx):
             graphs = torch.load(all_files[graph_idx], weights_only=False)
             try:
                 dataloader = create_dataloader_ddp(graphs, args.batch_size, rank, world_size)
-            except KeyError:
+            except Exception as e:
+                logging.error("Dataloader creation failed.")
+                logging.error("Exception: %s", str(e))
                 continue
-
             for high_level_subgraph, low_level_batch, batch_idx in dataloader:
                 high_level_subgraph = high_level_subgraph.to(device)
                 low_level_batch = low_level_batch.to(device)
@@ -93,19 +97,23 @@ def validate(rank, world_size, model, decoder, val_idx, all_files, args):
                 decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
                 recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X, decoded_high, decoded_low, 1 - high_mask, 1 - low_mask)
 
-                orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
-                                + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
+                # orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
+                #                 + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
 
-                loss = alpha_sigmoid * contrastive_loss + (1 - alpha_sigmoid) * recon_loss + orthogonal_loss
+                loss = alpha_sigmoid * contrastive_loss + (1 - alpha_sigmoid) * recon_loss #+ orthogonal_loss
+                if torch.isnan(loss) or not torch.isfinite(loss):
+                    print(f"Rank {rank}: NaN loss encountered, skipping")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
                 total_val_loss += loss
 
-    # Average over ranks
     return total_val_loss.item()
 
 def train(rank, world_size, args):
     """Main training loop for DDP."""
     setup(rank, world_size)
-    best_val_loss = float('inf')
+    # model_path = f"saved_models/final_model_2.pth"
 
     try:
         device = torch.device(f"cuda:{rank}")
@@ -114,102 +122,137 @@ def train(rank, world_size, args):
         all_files = sorted(glob(args.data_dir + "*/*"))
         train_idx, val_idx = train_test_split(np.arange(len(all_files)), test_size=0.2, random_state = 42)
 
-        train_idx_for_rank = train_idx[rank::world_size]
-        # val_idx_for_rank = val_idx[rank::world_size]
-        model = GraphEncoder(args.anchor_pe, args.pe_dim, args.init_dim, args.hidden_dim, args.output_dim, 
-                            args.num_layers, args.num_heads, args.blending).to(device)
-        model.apply(initialize_weights)
+        train_idx_for_rank = train_idx[rank::world_size]#[121:]
+        model = GraphEncoder(args.pe_dim, args.init_dim, args.hidden_dim, args.output_dim, 
+                            args.num_layers, args.num_heads, args.cross_message_passing, args.pe, args.anchor_pe, args.blending).to(device)
+        # model.apply(initialize_weights)
+        # checkpoint = torch.load(model_path, map_location=device)
+        # model.load_state_dict(checkpoint['model_state_dict'])
+        best_val_loss = float('inf')
+        #checkpoint['best_val_loss']
 
+        summary(model)
         model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
         decoder = GIN_decoder(args.output_dim, args.output_dim).to(device)
-        decoder.apply(initialize_weights)
+        # decoder.load_state_dict(checkpoint['decoder_state_dict'])
+        # decoder.apply(initialize_weights)
         decoder = DDP(decoder, device_ids=[rank], output_device=rank, find_unused_parameters=True)
-
         optimizer = optim.AdamW(list(model.parameters())+list(decoder.parameters()), 
                                 lr=args.lr, weight_decay=args.wd)
-
+        # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         for epoch in range(args.num_epochs):
+            start_time = time.time()
             total_loss = 0
-
-            for graph_idx in train_idx_for_rank:
+            for graph_idx in tqdm(train_idx_for_rank, desc=f"Rank {rank} | Epoch {epoch}"):
                 graphs = torch.load(all_files[graph_idx], weights_only=False)
                 try:
                     dataloader = create_dataloader_ddp(graphs, args.batch_size, rank, world_size)
-                except KeyError:
+                except Exception as e:
+                    logging.error("Dataloader creation failed.")
+                    logging.error("Exception: %s", str(e))
                     continue
 
-                for high_level_subgraph, low_level_batch, batch_idx in tqdm(dataloader):
+                for high_level_subgraph, low_level_batch, batch_idx in (dataloader):
                     optimizer.zero_grad()
+                    try:
+                        high_level_subgraph = high_level_subgraph.to(device)
+                        low_level_batch = low_level_batch.to(device)
+                        low_level_batch.batch_idx = batch_idx.to(device)
 
-                    high_level_subgraph = high_level_subgraph.to(device)
-                    low_level_batch = low_level_batch.to(device)
-                    low_level_batch.batch_idx = batch_idx.to(device)
+                        high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
+                        # print(high_mask)
+                        low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
 
-                    high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
-                    low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
+                        high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
+                        contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 2)
+                        _high_emb = high_emb * high_mask
+                        _low_emb = low_emb * low_mask
+                        decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
+                        cells, genes = high_level_subgraph.num_nodes, low_level_batch.num_nodes//high_level_subgraph.num_nodes
+                        recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X.view(cells, genes), decoded_high, decoded_low.view(cells, genes), 1 - high_mask, 1 - low_mask.view(cells, genes))
 
-                    high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
-                    contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 2)
+                        contrastive_component = alpha_sigmoid * contrastive_loss
+                        recon_component = (1 - alpha_sigmoid) * recon_loss
+                        orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
+                                + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
 
-                    _high_emb = high_emb * high_mask
-                    _low_emb = low_emb * low_mask
-                    decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
-                    recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X, decoded_high, decoded_low, 1 - high_mask, 1 - low_mask)
-
-                    orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
-                                    + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
-                    # alpha_sigmoid = F.sigmoid(decoder.module.alpha)  # Keep in computation graph
-
-                    contrastive_component = alpha_sigmoid * contrastive_loss
-                    recon_component = (1 - alpha_sigmoid) * recon_loss
-
-                    loss = contrastive_component + recon_component + orthogonal_loss
-                    # loss = F.sigmoid(decoder.module.alpha) * contrastive_loss + (1 - F.sigmoid(decoder.module.alpha)) * recon_loss + orthogonal_loss
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-
-                    del high_level_subgraph, low_level_batch, loss, high_emb, low_emb, contrastive_loss, recon_loss, high_mask, low_mask, _high_emb, _low_emb
+                        loss = contrastive_component + recon_component + orthogonal_loss
+                        if torch.isnan(loss) or not torch.isfinite(loss):
+                            print(f"Rank {rank}: NaN loss encountered, skipping")
+                            print(f"Contra: {contrastive_loss.item():.4f}, Recon: {recon_loss.item():.4f}")#, Ortho: {orthogonal_loss.item():.4f}")
+                            torch.cuda.empty_cache()
+                            gc.collect()
+                            continue                       
+                        loss.backward()
+                        optimizer.step()
+                        total_loss += loss.item()
+                        # logging.error(f"Rank {rank}: Loss = {loss.item()}, Total loss = {total_loss}")
+                        del high_level_subgraph, low_level_batch, loss, high_emb, low_emb, contrastive_loss, recon_loss, high_mask, low_mask, _high_emb, _low_emb
+                    except torch.cuda.OutOfMemoryError as e:
+                        logging.error(f"Rank {rank}: CUDA OOM occurred at {all_files[graph_idx]}:", e)
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        continue
+                    except RuntimeError as e:
+                        logging.error(f"\n============================")
+                        logging.error(f"Rank {rank}: Caught a RunTimeError: {e}")
+                        logging.error(f"Rank {rank}: skipping the file!!!")
+                        
+                        logging.error(f"HIGH_MASK: {high_mask}\n")
+                        logging.error(f"contrastive_loss: {contrastive_loss}, recon_loss: {recon_loss}")
+                        logging.error(f"cell-cell graph: {graphs[0]}")
+                        logging.error(f"high_emb, low_emb: {high_emb}, {low_emb}")
+                        logging.error(f"\n============================")
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        break
                     torch.cuda.empty_cache()
                     gc.collect()
-
                 del dataloader
+                torch.cuda.empty_cache()
                 gc.collect()
 
-            print(f"Rank {rank} - Epoch: {epoch + 1}, Loss: {total_loss}")
-
+            end_time = time.time()
+            print(f"Rank {rank} - Epoch: {epoch + 1}, Loss: {total_loss}, Time = {(end_time-start_time)//3600} hours")
+            
+            # dist.barrier()
             if rank == 0:  # Save only from rank 0
                 val_loss = validate(rank, world_size, model, decoder, val_idx, all_files, args)
                 print(f"[Validation] Epoch {epoch+1} | Rank {rank} | Val Loss: {val_loss:.4f} | Best Val Loss: {best_val_loss:.4f}")
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    model_path = f"saved_models/model_ddp_best.pth"
+                    model_path = f"saved_models/final_model.pth"
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.module.state_dict(),
                         'decoder_state_dict': decoder.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': val_loss,
-                        'args': args
+                        'loss': best_val_loss,
+                        'args': args,
+                        'epoch': epoch,
+                        'best_val_loss':best_val_loss
                     }, model_path)
                     print(f"✅ New best model saved at Epoch {epoch+1} with Val Loss {val_loss:.4f}")
-
+                    
+            # dist.barrier()
     finally:
         cleanup()
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="SCGFM")
     parser.add_argument('--data_dir', type=str, default = 'data/pretraining/', help="Directory where the raw data is stored")
-    parser.add_argument('--pe_dim', type=int, default= 32, help="Dimension of the positional encodings")
+    parser.add_argument('--pe_dim', type=int, default= 128, help="Dimension of the positional encodings")
     parser.add_argument('--init_dim', type=int, default= 128, help="Hidden dim for the MLP")
     parser.add_argument('--hidden_dim', type=int, default= 128, help="Hidden dim for the MLP")
-    parser.add_argument('--output_dim', type=int, default= 64, help="Output dim for the MLP")
+    parser.add_argument('--output_dim', type=int, default= 128, help="Output dim for the MLP")
     parser.add_argument('--blending', action='store_true')
     parser.add_argument('--anchor_pe', action='store_true')
+    parser.add_argument('--pe', action='store_true')
+    parser.add_argument('--cross_message_passing', action='store_true')
     parser.add_argument('--num_layers', type=int, default= 10, help="Number of MLP layers")
     parser.add_argument('--num_heads', type=int, default= 8, help="Number of transformer heads")
-    parser.add_argument('--batch_size', type=int, default= 128, help="Batch size")
+    parser.add_argument('--batch_size', type=int, default= 50, help="Batch size")
     parser.add_argument('--graph_idx', type=int, default= 0, help="Batch size")
     parser.add_argument('--lr', type=float, default= 1e-3, help="Learnign Rate")
     parser.add_argument('--wd', type=float, default= 3e-3, help="Weight decay")

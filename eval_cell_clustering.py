@@ -28,9 +28,10 @@ if __name__ == '__main__':
         for i in range(len(_high_level_graphs)):
             X = _high_level_graphs[i].X.cpu().numpy()
             y_true = _high_level_graphs[i].cell_type.cpu().numpy()
-            kmeans = KMeans(n_clusters=len(np.unique(y_true)))
-            y_pred = kmeans.fit_predict(X)
-            NMIs.append(normalized_mutual_info_score(y_true, y_pred))
+            for k in range(5):
+                kmeans = KMeans(n_clusters=len(np.unique(y_true)))
+                y_pred = kmeans.fit_predict(X)
+                NMIs.append(normalized_mutual_info_score(y_true, y_pred))
         NMIs = np.array(NMIs)
         print(f"Max: {NMIs.max()}, Mean: {NMIs.mean()}, Std: {NMIs.std()}")
         del(_high_level_graphs)

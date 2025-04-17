@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from torch_geometric.nn.pool import global_mean_pool
 from torch_geometric.nn.conv import MessagePassing
-from torch_geometric.nn import TransformerConv
+from torch_geometric.nn import TransformerConv, GPSConv, GINEConv, PNAConv, GINConv
 
 from model.GWT_model import GraphWaveletTransform
 
@@ -140,36 +140,79 @@ class MoETransformerConv(MessagePassing):
         return lambda_aux * aux_loss
 
 
-class MultiLevelGraphLayer(nn.Module):
-    def __init__(self, input_dim, output_dim, num_heads):
-        super(MultiLevelGraphLayer, self).__init__()
-        self.conv = TransformerConv(input_dim, output_dim // num_heads, heads=num_heads)
-        self.batch_norm = nn.LayerNorm(output_dim)
+class GINE(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(GINE, self).__init__()
+        self.layer = GINEConv(nn.Linear(input_dim, output_dim), train_eps=True)
 
+    def forward(self, x, edge_index):
+        x = self.layer(x, edge_index)
+        x = x.relu()
+        return x
+    
+
+
+class PNA(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(PNA, self).__init__()
+        self.layer = PNAConv(input_dim, output_dim,  ['mean', 'max', 'min', 'std'], ["linear"], None)
+
+    def forward(self, x, edge_index):
+        x = self.layers(x, edge_index)
+        x = x.relu()
+        return x
+
+class MultiLevelGraphLayer(nn.Module):
+    def __init__(self, input_dim, output_dim, num_heads, cross_message_passing):
+        super(MultiLevelGraphLayer, self).__init__()
+        self.conv_high = GINConv(nn.Linear(input_dim, output_dim), train_eps=True)
+        self.multi_head = nn.MultiheadAttention(input_dim, num_heads, batch_first=True)
+        self.conv_low = TransformerConv(input_dim, output_dim // num_heads, heads=num_heads)
+        # self.conv = GPSConv(input_dim, GINConv(nn.Linear(input_dim, output_dim), train_eps=True), heads=num_heads)
+        self.batch_norm = nn.LayerNorm(output_dim)
+        self.cross_message_passing = cross_message_passing
         self.attn_fclh = nn.Linear(output_dim * 2, 1, bias=False)
         self.attn_fchl = nn.Linear(output_dim * 2, 1, bias=False)
 
     def forward(self, high_emb, high_level_graph, low_emb, low_level_graphs):
         # high_emb, aux_loss_high = self.conv(high_emb, high_level_graph.edge_index)
         # low_emb, aux_loss_low = self.conv(low_emb, high_level_graph.edge_index)
-        high_emb = self.conv(high_emb, high_level_graph.edge_index)
-        low_emb = self.conv(low_emb, low_level_graphs.edge_index)
-        high_emb = F.relu(self.batch_norm(high_emb))
-        low_emb = F.relu(self.batch_norm(low_emb))
+        high_emb = self.batch_norm(high_emb)
+        low_emb = self.batch_norm(low_emb)
 
-        _high_emb = high_emb#.clone().requires_grad_()
-        x = global_mean_pool(low_emb, low_level_graphs.batch)
-        sim_score = torch.sigmoid(self.attn_fclh(torch.cat([_high_emb, x], dim=1)))
-        _high_emb = sim_score * _high_emb + (1 - sim_score) * x
+        high_emb_gin = self.conv_high(high_emb, high_level_graph.edge_index)
+        high_emb_mh, _ = self.multi_head(high_emb, high_emb, high_emb)
+        high_emb = high_emb_mh + high_emb_gin
         
-        updated_low_emb = low_emb.clone().requires_grad_()
-        for i in range(low_level_graphs.batch.max().item() + 1):
-            mask = (low_level_graphs.batch == i)
-            low_emb_i = low_emb[mask]
-            high_emb_i = high_emb[i].unsqueeze(0)
+        low_emb = self.conv_low(low_emb, low_level_graphs.edge_index)
 
-            attn_scores_low = torch.sigmoid(self.attn_fchl(torch.cat([high_emb_i.expand_as(low_emb_i), low_emb_i], dim=1)))
+        if(self.cross_message_passing):
+            _high_emb = high_emb#.clone().requires_grad_()
+            x = global_mean_pool(low_emb, low_level_graphs.batch)
+            sim_score = torch.sigmoid(self.attn_fclh(torch.cat([_high_emb, x], dim=1)))
+            _high_emb = sim_score * _high_emb + (1 - sim_score) * x
+            
+            # updated_low_emb = low_emb.clone().requires_grad_()
+            # for i in range(low_level_graphs.batch.max().item() + 1):
+            #     mask = (low_level_graphs.batch == i)
+            #     low_emb_i = low_emb[mask]
+            #     high_emb_i = high_emb[i].unsqueeze(0)
 
-            updated_low_emb[mask] = attn_scores_low * low_emb_i + (1 - attn_scores_low) * high_emb_i
+            #     attn_scores_low = torch.sigmoid(self.attn_fchl(torch.cat([high_emb_i.expand_as(low_emb_i), low_emb_i], dim=1)))
 
-        return _high_emb, updated_low_emb#, aux_loss_high+aux_loss_low
+            #     updated_low_emb[mask] = attn_scores_low * low_emb_i + (1 - attn_scores_low) * high_emb_i
+            # Gather high_emb[i] for each node in low_emb using the batch vector
+            high_emb_per_node = high_emb[low_level_graphs.batch]  # (N_low_nodes, output_dim)
+
+            # Concatenate high_emb and low_emb
+            concat_hl = torch.cat([high_emb_per_node, low_emb], dim=1)  # (N_low_nodes, 2 * output_dim)
+
+            # Compute attention scores in batch
+            attn_scores_low = torch.sigmoid(self.attn_fchl(concat_hl))  # (N_low_nodes, 1)
+
+            # Weighted update
+            updated_low_emb = attn_scores_low * low_emb + (1 - attn_scores_low) * high_emb_per_node  # (N_low_nodes, output_dim)
+
+            return F.gelu(_high_emb), F.gelu(updated_low_emb)#, aux_loss_high+aux_loss_low
+        else:
+            return F.gelu(high_emb), F.gelu(low_emb)
