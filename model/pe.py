@@ -1,5 +1,7 @@
 import torch
 
+import torch
+
 def calculate_sinusoidal_pe(high_level_graph, low_level_graphs, pe_dim):
     # Step 1: Calculate cell positional encodings (Dist_i)
     num_nodes = high_level_graph.num_nodes
@@ -47,8 +49,7 @@ def calculate_sinusoidal_pe(high_level_graph, low_level_graphs, pe_dim):
         batch_rank_norm = torch.linspace(0, 1, steps=batch_ranks.size(0), device=batch_gene_expressions.device)
         rank_norm[torch.where(batch_mask)[0]] = batch_rank_norm[torch.argsort(batch_ranks)]
 
-    # Apply sinusoidal encoding to the gene positional encodings
-    div_term = torch.exp(torch.arange(0, pe_dim, 2, device=rank_norm.device).float() * -(torch.log(torch.tensor(10000.0)) / pe_dim))
+    div_term = 10000 * (2 * torch.arange(0, pe_dim, 2, device=rank_norm.device).float() /half_dim)
     gene_sinusoidal_pe = torch.zeros(rank_norm.size(0), pe_dim, device=rank_norm.device)
     gene_sinusoidal_pe[:, 0::2] = torch.sin(rank_norm.unsqueeze(-1) * div_term)
     gene_sinusoidal_pe[:, 1::2] = torch.cos(rank_norm.unsqueeze(-1) * div_term)

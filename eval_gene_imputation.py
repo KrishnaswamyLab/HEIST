@@ -21,7 +21,8 @@ from torchinfo import summary
 import sys
 from glob import glob
 from argparse import ArgumentParser
-
+import lovely_tensors as lt
+lt.monkey_patch()
 parser = ArgumentParser(description="SCGFM")
 parser.add_argument('--data_name', type=str, default = 'gsm', help="Directory where the raw data is stored")
 parser.add_argument('--pe_dim', type=int, default= 128, help="Dimension of the positional encodings")
@@ -51,7 +52,7 @@ if __name__ == '__main__':
     
     graphs_names = glob(f"data/{args.data_name}_preprocessed/*")[:1]
     
-    model_path = f"saved_models/final_model.pth"
+    model_path = f"saved_models/final_model_sea_pe_concat_softmax.pth"
     checkpoint = torch.load(model_path)
     fine_tune = args.fine_tune
     args = checkpoint['args']
@@ -61,7 +62,7 @@ if __name__ == '__main__':
         args.device = 'cuda:{}'.format(args.gpu)
     else:
         args.device = 'cpu'
-
+    args.batch_size = 50
     model = GraphEncoder(args.pe_dim, args.init_dim, args.hidden_dim, args.output_dim, 
                             args.num_layers, args.num_heads, args.cross_message_passing, args.pe, args.anchor_pe, args.blending).to(args.device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay = args.wd)

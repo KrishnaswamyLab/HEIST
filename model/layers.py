@@ -174,45 +174,38 @@ class MultiLevelGraphLayer(nn.Module):
         self.attn_fclh = nn.Linear(output_dim * 2, 1, bias=False)
         self.attn_fchl = nn.Linear(output_dim * 2, 1, bias=False)
 
-    def forward(self, high_emb, high_level_graph, low_emb, low_level_graphs):
-        # high_emb, aux_loss_high = self.conv(high_emb, high_level_graph.edge_index)
-        # low_emb, aux_loss_low = self.conv(low_emb, high_level_graph.edge_index)
-        high_emb = self.batch_norm(high_emb)
-        low_emb = self.batch_norm(low_emb)
+    def forward(self, high_emb_in, high_level_graph, low_emb_in, low_level_graphs):
+        high_emb = self.batch_norm(high_emb_in)
+        low_emb = self.batch_norm(low_emb_in)
 
         high_emb_gin = self.conv_high(high_emb, high_level_graph.edge_index)
         high_emb_mh, _ = self.multi_head(high_emb, high_emb, high_emb)
-        high_emb = high_emb_mh + high_emb_gin
+        high_emb = high_emb_mh + high_emb_gin + high_emb_in
         
-        low_emb = self.conv_low(low_emb, low_level_graphs.edge_index)
-
+        low_emb = self.conv_low(low_emb, low_level_graphs.edge_index) + low_emb_in
+        
         if(self.cross_message_passing):
             _high_emb = high_emb#.clone().requires_grad_()
             x = global_mean_pool(low_emb, low_level_graphs.batch)
             sim_score = torch.sigmoid(self.attn_fclh(torch.cat([_high_emb, x], dim=1)))
             _high_emb = sim_score * _high_emb + (1 - sim_score) * x
             
-            # updated_low_emb = low_emb.clone().requires_grad_()
-            # for i in range(low_level_graphs.batch.max().item() + 1):
-            #     mask = (low_level_graphs.batch == i)
-            #     low_emb_i = low_emb[mask]
-            #     high_emb_i = high_emb[i].unsqueeze(0)
-
-            #     attn_scores_low = torch.sigmoid(self.attn_fchl(torch.cat([high_emb_i.expand_as(low_emb_i), low_emb_i], dim=1)))
-
-            #     updated_low_emb[mask] = attn_scores_low * low_emb_i + (1 - attn_scores_low) * high_emb_i
             # Gather high_emb[i] for each node in low_emb using the batch vector
             high_emb_per_node = high_emb[low_level_graphs.batch]  # (N_low_nodes, output_dim)
+            # concat = torch.stack([low_emb, high_emb_per_node], dim=1)  # [N, 2, d_model]
+            # scores = self.attn_fchl(concat.view(concat.shape[0], -1))  # [N, 1]
+            # alpha = torch.softmax(torch.cat([scores, -scores], dim=1), dim=1)  # [N, 2]
+            # # alpha = torch.softmax(self.attn_fchl(concat.view(concat.shape[0], -1)), dim=1)  # [N, 2]
+            # updated_low_emb = alpha[:, 0:1] * low_emb + alpha[:, 1:2] * high_emb_per_node
 
             # Concatenate high_emb and low_emb
-            concat_hl = torch.cat([high_emb_per_node, low_emb], dim=1)  # (N_low_nodes, 2 * output_dim)
+            concat_hl = torch.cat([low_emb, high_emb_per_node], dim=1)  # (N_low_nodes, 2 * output_dim)
 
             # Compute attention scores in batch
-            attn_scores_low = torch.sigmoid(self.attn_fchl(concat_hl))  # (N_low_nodes, 1)
+            attn_scores_low = torch.sigmoid(self.attn_fchl(concat_hl)+1)  # (N_low_nodes, 1)
 
             # Weighted update
             updated_low_emb = attn_scores_low * low_emb + (1 - attn_scores_low) * high_emb_per_node  # (N_low_nodes, output_dim)
-
             return F.gelu(_high_emb), F.gelu(updated_low_emb)#, aux_loss_high+aux_loss_low
         else:
             return F.gelu(high_emb), F.gelu(low_emb)

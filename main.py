@@ -129,7 +129,7 @@ if __name__ == '__main__':
                             args.num_layers, args.num_heads, args.cross_message_passing, args.pe, args.anchor_pe, args.blending).to(args.device)
     model.apply(initialize_weights)
     decoder = GIN_decoder(args.output_dim, args.output_dim).to(args.device)
-    decoder.apply(initialize_weights)
+    # decoder.apply(initialize_weights)
     optimizer = optim.AdamW(list(model.parameters())+list(decoder.parameters()), lr=args.lr, weight_decay = args.wd)
 
     summary(model)
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     for epoch in range(args.num_epochs):
         total_loss = 0
         start_time = time.time()
-        for graph_idx in train_idx:
+        for i, graph_idx in enumerate(train_idx):
             graphs = torch.load(graphs_list[graph_idx], weights_only = False)
             try:
                 dataloader = create_dataloader(graphs, args.batch_size)
@@ -150,29 +150,36 @@ if __name__ == '__main__':
 
             for high_level_subgraph, low_level_batch, batch_idx in tqdm(dataloader):
                 optimizer.zero_grad()
-                # Move data to device only when needed
                 high_level_subgraph = high_level_subgraph.to(args.device) # batch_size \times 2
                 low_level_batch = low_level_batch.to(args.device) # batch_size * num_genes \times 1
                 low_level_batch.batch_idx = batch_idx.to(args.device)
-                
-                high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(args.device)
-                low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(args.device)
+                low_level_batch.X = low_level_batch.X * 100
+                high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.1).long().to(args.device)
+                low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.1).long().to(args.device)
+                if(i==10):
+                    high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask, True)
+                    print("After forward")
+                    import pdb; pdb.set_trace()
+                else:
+                    high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
 
-                high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
-                contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 2)
+                contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 10)
                 _high_emb = high_emb * high_mask
                 _low_emb = low_emb * low_mask
 
-                decoded_high, decoded_low = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
-                recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X, decoded_high, decoded_low, 1 - high_mask, 1 - low_mask)
-                orthogonal_loss = 0.1*(_high_emb.T@_high_emb - torch.eye(_high_emb.shape[1]).to(args.device)).square().mean() + 0.1*(_low_emb.T@_low_emb - torch.eye(_low_emb.shape[1]).to(args.device)).square().mean()
-
-                loss = F.sigmoid(decoder.alpha) * contrastive_loss + (1 - F.sigmoid(decoder.alpha)) * recon_loss + orthogonal_loss
+                decoded_high, decoded_low, alpha = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
+                # recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X, decoded_high, decoded_low, 1 - high_mask, 1 - low_mask)
+                if((1 - high_mask).sum()):
+                    recon_loss = F.mse_loss(decoded_high*(1-high_mask), high_level_subgraph.X.float()*(1-high_mask), reduction='sum')/high_mask.sum() + F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                else:
+                    recon_loss = F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                # orthogonal_loss = 0.1*(_high_emb.T@_high_emb - torch.eye(_high_emb.shape[1]).to(args.device)).square().mean() + 0.1*(_low_emb.T@_low_emb - torch.eye(_low_emb.shape[1]).to(args.device)).square().mean()
+                loss = F.sigmoid(decoder.alpha) * contrastive_loss + (1 - F.sigmoid(decoder.alpha)) * recon_loss #+ orthogonal_loss
                 total_loss += loss.item()
                 # loss = model.forward_contrastive(high_level_subgraph, low_level_batch)
                 loss.backward()
                 optimizer.step()
-
+                # import pdb; pdb.set_trace()
                 del(high_level_subgraph, low_level_batch, loss, high_emb, low_emb, contrastive_loss, recon_loss, high_mask, low_mask, _high_emb, _low_emb)
                 torch.cuda.empty_cache()
                 gc.collect()

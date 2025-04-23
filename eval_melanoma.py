@@ -119,7 +119,7 @@ if __name__ == '__main__':
 
         print(args)
         print("Loading graphs")
-        _high_level_graphs = torch.load('data/melanoma_graphs_6M_attention_anchor_pe_cross_attention_blending_orthogonal_sea_only_moe.pt')
+        _high_level_graphs = torch.load('data/melanoma_graphs_model_sea_pe_concat_no_cross.pt')
         indices = []
         for i in range(len(_high_level_graphs)):
             if hasattr(_high_level_graphs[i], "y") and not math.isnan(getattr(_high_level_graphs[i], "y")):
@@ -134,24 +134,25 @@ if __name__ == '__main__':
         for graph in _high_level_graphs:
             embeddings.append(graph.X.mean(0).tolist())  # Pooling for MLP input
         embeddings = torch.FloatTensor(embeddings).to(args.device)
-        embeddings[:, embeddings.shape[1]//2:] = embeddings[:, embeddings.shape[1]//2:]/30
+        # embeddings[:, embeddings.shape[1]//2:] = embeddings[:, embeddings.shape[1]//2:]/30
         class_weights = torch.tensor([(1 - labels.float().mean()), labels.float().mean()]).to(args.device)
         
-        roc_scores = []
+        for i in range(100):
+            roc_scores = []
+            np.random.seed(i)
+            for fold in range(2):
+                model = MLP(embeddings.shape[1], args.hidden_dim, 2, args.num_layers).to(args.device)
+                train_idx, test_idx = train_test_split(np.arange(embeddings.shape[0]), test_size = 0.2, stratify= labels.cpu().numpy())
+                val_idx, test_idx = train_test_split(test_idx, test_size = 0.5, stratify= labels[test_idx].cpu().numpy())
+                train_idx = torch.LongTensor(train_idx).to(args.device)
+                val_idx = torch.LongTensor(val_idx).to(args.device)
+                test_idx = torch.LongTensor(test_idx).to(args.device)
+                train_loader = DataLoader(CustomDataset(embeddings[train_idx], labels[train_idx]), batch_size=args.batch_size, shuffle=True)
+                val_loader = DataLoader(CustomDataset(embeddings[val_idx], labels[val_idx]), batch_size=args.batch_size, shuffle=False)#, exclude_keys=['cell_type', 'region_id', 'status', 'acquisition_id_visualizer', 'sample_label_visualizer'])
+                test_loader = DataLoader(CustomDataset(embeddings[test_idx], labels[test_idx]), batch_size=args.batch_size, shuffle=False)#x, exclude_keys=['cell_type', 'region_id', 'status', 'acquisition_id_visualizer', 'sample_label_visualizer'])
 
-        for fold in range(2):
-            model = MLP(embeddings.shape[1], args.hidden_dim, 2, args.num_layers).to(args.device)
-            train_idx, test_idx = train_test_split(np.arange(embeddings.shape[0]), test_size = 0.2, stratify= labels.cpu().numpy())
-            val_idx, test_idx = train_test_split(test_idx, test_size = 0.5, stratify= labels[test_idx].cpu().numpy())
-            train_idx = torch.LongTensor(train_idx).to(args.device)
-            val_idx = torch.LongTensor(val_idx).to(args.device)
-            test_idx = torch.LongTensor(test_idx).to(args.device)
-            train_loader = DataLoader(CustomDataset(embeddings[train_idx], labels[train_idx]), batch_size=args.batch_size, shuffle=True)
-            val_loader = DataLoader(CustomDataset(embeddings[val_idx], labels[val_idx]), batch_size=args.batch_size, shuffle=False)#, exclude_keys=['cell_type', 'region_id', 'status', 'acquisition_id_visualizer', 'sample_label_visualizer'])
-            test_loader = DataLoader(CustomDataset(embeddings[test_idx], labels[test_idx]), batch_size=args.batch_size, shuffle=False)#x, exclude_keys=['cell_type', 'region_id', 'status', 'acquisition_id_visualizer', 'sample_label_visualizer'])
-
-            best_acc = train(model, train_loader, val_loader, test_loader)
-            roc_scores.append(best_acc)
-        roc_scores = np.array(roc_scores)
-        print(f"Mean:{roc_scores.mean()}, Std:{roc_scores.std()}.")
-        print(f"Max:{roc_scores.max()}.")
+                best_acc = train(model, train_loader, val_loader, test_loader)
+                roc_scores.append(best_acc)
+            roc_scores = np.array(roc_scores)
+            print(f"Mean:{roc_scores.mean()}, Std:{roc_scores.std()}.")
+            print(f"Max:{roc_scores.max()}.")

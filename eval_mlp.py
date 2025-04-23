@@ -125,7 +125,7 @@ INPUT_DIM_LOW = 1
 if __name__ == '__main__':
     print(args)
     print("Loading graphs")
-    _high_level_graphs = torch.load('data/space-gm/{}_graphs_6M_attention_sinusoidal_pe_cross_attention_blending_orthogonal_sea_only_moe.pt'.format(args.data_name))
+    _high_level_graphs = torch.load('data/space-gm/{}_graphs_model_sea_pe_concat_no_cross.pt'.format(args.data_name))
     # _high_level_graphs = torch.load('data/space-gm/{}_graphs_anchor_ranknorm_pe.pt'.format(args.data_name))
     if(args.data_name == "charville"):
         split = [["c002"], ["c004"]]
@@ -148,13 +148,13 @@ if __name__ == '__main__':
     for graph in _high_level_graphs:
         embeddings.append(graph.X.mean(0).tolist())  # Pooling for MLP input
     embeddings = torch.FloatTensor(embeddings).to(args.device)
-    embeddings[:, embeddings.shape[1]//2:] = embeddings[:, embeddings.shape[1]//2:]/40
+    # embeddings[:, embeddings.shape[1]//2:] = embeddings[:, embeddings.shape[1]//2:]/40
     class_weights = torch.tensor([(1 - labels.float().mean()), labels.float().mean()]).to(args.device)
     
     roc_scores = []
 
     for fold in range(10):
-        model = MLP(2*args.output_dim, args.hidden_dim, 2, args.num_layers).to(args.device)
+        model = MLP(embeddings.shape[1], args.hidden_dim, 2, args.num_layers).to(args.device)
         if(args.data_name == "dfci"):
             train_idx, test_idx = train_test_split(np.arange(embeddings.shape[0]), test_size = 0.2, stratify= labels.cpu().numpy(), random_state = 107)
             val_idx, test_idx = train_test_split(test_idx, test_size = 0.5)

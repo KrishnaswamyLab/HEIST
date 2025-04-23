@@ -85,22 +85,26 @@ def validate(rank, world_size, model, decoder, val_idx, all_files, args):# -> An
                 low_level_batch = low_level_batch.to(device)
                 low_level_batch.batch_idx = batch_idx.to(device)
 
-                high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
-                low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
+                #high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
+                #low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
 
-                high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
+                high_emb, low_emb = model(high_level_subgraph, low_level_batch)#, high_mask, low_mask)
 
                 contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 2)
 
-                _high_emb = high_emb * high_mask
-                _low_emb = low_emb * low_mask
-                decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
-                recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X, decoded_high, decoded_low, 1 - high_mask, 1 - low_mask)
-
+                # _high_emb = high_emb * high_mask
+                # _low_emb = low_emb * low_mask
+                # decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
+                # if((1 - high_mask).sum()):
+                #     recon_loss = F.mse_loss(decoded_high*(1-high_mask), high_level_subgraph.X.float()*(1-high_mask), reduction='sum')/high_mask.sum() + F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                # else:
+                #     recon_loss = F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                                
                 # orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
                 #                 + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
 
-                loss = alpha_sigmoid * contrastive_loss + (1 - alpha_sigmoid) * recon_loss #+ orthogonal_loss
+                # loss = alpha_sigmoid * contrastive_loss + (1 - alpha_sigmoid) * recon_loss #+ orthogonal_loss
+                loss = contrastive_loss
                 if torch.isnan(loss) or not torch.isfinite(loss):
                     print(f"Rank {rank}: NaN loss encountered, skipping")
                     torch.cuda.empty_cache()
@@ -119,7 +123,7 @@ def train(rank, world_size, args):
         device = torch.device(f"cuda:{rank}")
 
         # Load dataset
-        all_files = sorted(glob(args.data_dir + "*/*"))
+        all_files = sorted(glob(args.data_dir + "*"))
         train_idx, val_idx = train_test_split(np.arange(len(all_files)), test_size=0.2, random_state = 42)
 
         train_idx_for_rank = train_idx[rank::world_size]#[121:]
@@ -159,24 +163,28 @@ def train(rank, world_size, args):
                         low_level_batch = low_level_batch.to(device)
                         low_level_batch.batch_idx = batch_idx.to(device)
 
-                        high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
+                        # high_mask = 1 - torch.bernoulli(torch.ones(high_level_subgraph.num_nodes, 1)*0.3).long().to(device)
                         # print(high_mask)
-                        low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
+                        # low_mask = 1 - torch.bernoulli(torch.ones(low_level_batch.num_nodes, 1)*0.3).long().to(device)
 
-                        high_emb, low_emb = model(high_level_subgraph, low_level_batch, high_mask, low_mask)
+                        high_emb, low_emb = model(high_level_subgraph, low_level_batch)#, high_mask, low_mask)
                         contrastive_loss = contrastive_loss_cell(low_level_batch.cell_type, high_emb, low_level_batch, low_emb, 2)
-                        _high_emb = high_emb * high_mask
-                        _low_emb = low_emb * low_mask
-                        decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
-                        cells, genes = high_level_subgraph.num_nodes, low_level_batch.num_nodes//high_level_subgraph.num_nodes
-                        recon_loss = mae_loss_cell(high_level_subgraph.X, low_level_batch.X.view(cells, genes), decoded_high, decoded_low.view(cells, genes), 1 - high_mask, 1 - low_mask.view(cells, genes))
+                        # _high_emb = high_emb * high_mask
+                        # _low_emb = low_emb * low_mask
+                        # decoded_high, decoded_low, alpha_sigmoid = decoder(_high_emb, high_level_subgraph, _low_emb, low_level_batch)
+                        # cells, genes = high_level_subgraph.num_nodes, low_level_batch.num_nodes//high_level_subgraph.num_nodes
+                        # if((1 - high_mask).sum()):
+                        #     recon_loss = F.mse_loss(decoded_high*(1-high_mask), high_level_subgraph.X.float()*(1-high_mask), reduction='sum')/high_mask.sum() + F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                        # else:
+                        #     recon_loss = F.mse_loss(decoded_low*(1-low_mask), low_level_batch.X.float()*(1-low_mask), reduction='sum')/low_mask.sum()
+                        # orthogonal_loss = 0.1*(_high_emb.T@_high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() + 0.1*(_low_emb.T@_low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
+                        
+                        #contrastive_component = alpha_sigmoid * contrastive_loss
+                        # econ_component = (1 - alpha_sigmoid) * recon_loss
+                      #  orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
+                       #         + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
 
-                        contrastive_component = alpha_sigmoid * contrastive_loss
-                        recon_component = (1 - alpha_sigmoid) * recon_loss
-                        orthogonal_loss = 0.1 * (_high_emb.T @ _high_emb - torch.eye(_high_emb.shape[1]).to(device)).square().mean() \
-                                + 0.1 * (_low_emb.T @ _low_emb - torch.eye(_low_emb.shape[1]).to(device)).square().mean()
-
-                        loss = contrastive_component + recon_component + orthogonal_loss
+                        loss = contrastive_loss #contrastive_component + recon_component# + orthogonal_loss
                         if torch.isnan(loss) or not torch.isfinite(loss):
                             print(f"Rank {rank}: NaN loss encountered, skipping")
                             print(f"Contra: {contrastive_loss.item():.4f}, Recon: {recon_loss.item():.4f}")#, Ortho: {orthogonal_loss.item():.4f}")
@@ -187,7 +195,7 @@ def train(rank, world_size, args):
                         optimizer.step()
                         total_loss += loss.item()
                         # logging.error(f"Rank {rank}: Loss = {loss.item()}, Total loss = {total_loss}")
-                        del high_level_subgraph, low_level_batch, loss, high_emb, low_emb, contrastive_loss, recon_loss, high_mask, low_mask, _high_emb, _low_emb
+                        del high_level_subgraph, low_level_batch, loss, high_emb, low_emb, contrastive_loss#, high_mask, low_mask, _high_emb, _low_emb#, recon_loss
                     except torch.cuda.OutOfMemoryError as e:
                         logging.error(f"Rank {rank}: CUDA OOM occurred at {all_files[graph_idx]}:", e)
                         torch.cuda.empty_cache()
@@ -222,7 +230,7 @@ def train(rank, world_size, args):
 
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    model_path = f"saved_models/final_model.pth"
+                    model_path = f"saved_models/final_model_sea_pe_concat_softmax.pth"
                     torch.save({
                         'epoch': epoch,
                         'model_state_dict': model.module.state_dict(),
@@ -241,7 +249,7 @@ def train(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="SCGFM")
-    parser.add_argument('--data_dir', type=str, default = 'data/pretraining/', help="Directory where the raw data is stored")
+    parser.add_argument('--data_dir', type=str, default = 'data/pretraining/sea_preprocessed/', help="Directory where the raw data is stored")
     parser.add_argument('--pe_dim', type=int, default= 128, help="Dimension of the positional encodings")
     parser.add_argument('--init_dim', type=int, default= 128, help="Hidden dim for the MLP")
     parser.add_argument('--hidden_dim', type=int, default= 128, help="Hidden dim for the MLP")

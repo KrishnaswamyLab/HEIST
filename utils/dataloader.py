@@ -66,7 +66,7 @@ def create_dataloader(graphs, batch_size, permute = True):
 
     G = to_networkx(high_level_graph, to_undirected=True)
 
-    num_partitions = num_nodes//batch_size
+    num_partitions = math.ceil(num_nodes/batch_size)
     if(num_partitions):
         adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
         _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)

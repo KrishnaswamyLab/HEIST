@@ -221,7 +221,7 @@ def mae_loss_cell(high_emb, low_emb, decoded_high, decoded_low, high_mask, low_m
     else:
         high_recon_loss = 0
     low_recon_loss = (1-F.cosine_similarity(low_emb*low_mask,decoded_low*low_mask)).sum()/low_mask.sum()
-    return (high_recon_loss + 0.01*low_recon_loss)/2
+    return (high_recon_loss + low_recon_loss)/2
 
 def contrastive_loss_cell_single_view(cell_types, high_emb, low_emb, N):
     num_cells = cell_types.shape[0]

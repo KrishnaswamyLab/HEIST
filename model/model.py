@@ -4,9 +4,29 @@ import torch.nn.functional as F
 
 from torch_geometric.nn import TransformerConv, GINConv, GINEConv
 from torch_geometric.nn.pool import global_mean_pool
-
+from torch_geometric.utils import get_laplacian
+import numpy as np
+from torch_scatter import scatter
+import torch_geometric as tg
+import matplotlib.pyplot as plt
 from model.layers import MultiLevelGraphLayer, HierarchicalBlending, HeirarchicalBlendingWavelet
 from model.pe import calculate_sinusoidal_pe, calculate_anchor_pe
+
+def get_dirichlet_energy_normalised(hidden, edge_index): 
+    deg = tg.utils.degree(edge_index[0])
+    deg = torch.sqrt(deg + torch.ones_like(deg))
+    deg = deg.to(hidden.device)
+    
+    diff = (hidden/deg[:,None])[edge_index[0]] - (hidden/deg[:,None])[edge_index[1]]
+    dist = torch.norm(diff, dim=-1)**2
+    neigh_sum = scatter(dist, edge_index[0], dim=0, reduce='sum')
+    
+    batch = torch.zeros(neigh_sum.size(0)).long()
+    batch = batch.to(neigh_sum.device)
+    
+    neigh_sum = neigh_sum.unsqueeze(-1)
+    
+    return torch.sqrt(global_mean_pool(neigh_sum, batch=batch)).cpu().detach().item()
 
 class GraphEncoder(nn.Module):
     def __init__(self, pe_dim, init_dim, hidden_dim, output_dim, num_layers, num_heads, cross_message_passing, positional_encoding, anchor_pe, blending):
@@ -19,8 +39,8 @@ class GraphEncoder(nn.Module):
         else:
             self.pe_fn = calculate_sinusoidal_pe
         
-        self.mlp_high = nn.Sequential(nn.Linear(self.pe_dim, init_dim), nn.GELU())
-        self.mlp_low = nn.Sequential(nn.Linear(self.pe_dim, init_dim), nn.GELU())
+        self.mlp_high = nn.Sequential(nn.Linear(2 + self.pe_dim, init_dim), nn.GELU())
+        self.mlp_low = nn.Sequential(nn.Linear(1 + self.pe_dim, init_dim), nn.GELU())
         
         self.convs = nn.ModuleList()
 
@@ -33,64 +53,67 @@ class GraphEncoder(nn.Module):
         self.convs.append(MultiLevelGraphLayer(hidden_dim, output_dim, num_heads, self.cross_message_passing))
 
         self.projection_head = nn.Sequential(nn.Linear(output_dim, output_dim), nn.GELU())
-        self.beta = nn.Parameter(torch.tensor(0.5))  
+        self.beta = nn.Parameter(torch.tensor(0.0))  
         self.hierarchical_blending = HierarchicalBlending(pe_dim, num_heads)
 
 
-    def forward(self, high_level_graph, low_level_graphs, high_mask=None, low_mask=None):
+    def forward(self, high_level_graph, low_level_graphs, high_mask=None, low_mask=None):# -> tuple:
         if high_mask is not None and low_mask is not None:
             high_level_graph.X = high_level_graph.X * high_mask
             low_level_graphs.X = low_level_graphs.X * low_mask
-
+    
         if(self.positional_encoding):
             high_level_graph, low_level_graphs = self.pe_fn(high_level_graph, low_level_graphs, self.pe_dim)
             high_level_graph.pe = high_level_graph.pe.to(high_level_graph.X.device)
             low_level_graphs.pe = low_level_graphs.pe.to(high_level_graph.X.device)
         
-            high_emb = high_level_graph.X.repeat([1,self.pe_dim//2]).float() + high_level_graph.pe.float()
-            low_level_graphs.pe = F.sigmoid(self.beta) * low_level_graphs.pe.float() + (1 - F.sigmoid(self.beta)) * high_level_graph.pe[low_level_graphs.batch].float()
-            low_emb = low_level_graphs.X.float() + low_level_graphs.pe.float()
+            high_emb_in = torch.cat([high_level_graph.X.float(), high_level_graph.pe.float()], 1)
+            low_emb_in = torch.cat([low_level_graphs.X.float(), low_level_graphs.pe.float()], 1)
         else:
             high_emb = high_level_graph.X.float()
             low_emb = low_level_graphs.X.float()
         if self.blending:
             high_emb, low_emb = self.hierarchical_blending(high_emb, low_emb, low_level_graphs.batch)# -> tuple
-        high_emb, low_emb = self.mlp_high(high_emb), self.mlp_low(low_emb)
-        high_emb, low_emb= self.convs[0](high_emb, high_level_graph, low_emb, low_level_graphs)
+        high_emb_in, low_emb_in = self.mlp_high(high_emb_in), self.mlp_low(low_emb_in)
+        high_emb, low_emb= self.convs[0](high_emb_in, high_level_graph, low_emb_in, low_level_graphs)
 
-        for layer in self.convs[1:-1]:
+        for i, layer in enumerate(self.convs[1:]):
             high_emb_new, low_emb_new = layer(high_emb, high_level_graph, low_emb, low_level_graphs)
             
             high_emb = high_emb_new + high_emb
             low_emb = low_emb_new + low_emb
-        high_emb, low_emb = self.convs[-1](high_emb, high_level_graph, low_emb, low_level_graphs)
-        return self.projection_head(high_emb), self.projection_head(low_emb)#, aux_loss
+        # high_emb, low_emb = self.convs[-1](high_emb+high_emb_in, high_level_graph, low_emb+low_emb_in, low_level_graphs)
+        return high_emb, low_emb#, aux_loss
 
     def encode(self, high_level_graph, low_level_graphs, gene_mask = None):
         if gene_mask is not None:
-            low_level_graphs.X = low_level_graphs.X * (gene_mask)
+            low_level_graphs.X = low_level_graphs.X * gene_mask
+    
         if(self.positional_encoding):
             high_level_graph, low_level_graphs = self.pe_fn(high_level_graph, low_level_graphs, self.pe_dim)
             high_level_graph.pe = high_level_graph.pe.to(high_level_graph.X.device)
             low_level_graphs.pe = low_level_graphs.pe.to(high_level_graph.X.device)
         
-            high_emb = high_level_graph.X.repeat([1,self.pe_dim//2]).float() + high_level_graph.pe.float()
-            low_level_graphs.pe = F.sigmoid(self.beta) * low_level_graphs.pe.float() + (1 - F.sigmoid(self.beta)) * high_level_graph.pe[low_level_graphs.batch].float()
-            low_emb = low_level_graphs.X.float() + low_level_graphs.pe.float()
+            high_emb_in = torch.cat([high_level_graph.X.float(), high_level_graph.pe.float()], 1)
+            low_emb_in = torch.cat([low_level_graphs.X.float(), low_level_graphs.pe.float()], 1)
         else:
             high_emb = high_level_graph.X.float()
             low_emb = low_level_graphs.X.float()
+
         if self.blending:
             high_emb, low_emb = self.hierarchical_blending(high_emb, low_emb, low_level_graphs.batch)# -> tuple
+        import pdb; pdb.set_trace()
+        high_emb_in, low_emb_in = self.mlp_high(high_emb_in), self.mlp_low(low_emb_in)
+        import pdb; pdb.set_trace()
+        high_emb, low_emb= self.convs[0](high_emb_in, high_level_graph, low_emb_in, low_level_graphs)
+        import pdb; pdb.set_trace()
 
-        high_emb, low_emb= self.convs[0](high_emb, high_level_graph, low_emb, low_level_graphs)
-
-        for layer in self.convs[1:-1]:
+        for i, layer in enumerate(self.convs[1:]):
             high_emb_new, low_emb_new = layer(high_emb, high_level_graph, low_emb, low_level_graphs)
             
             high_emb = high_emb_new + high_emb
             low_emb = low_emb_new + low_emb
-        high_emb, low_emb = self.convs[-1](high_emb, high_level_graph, low_emb, low_level_graphs)
+        import pdb; pdb.set_trace()
 
         return high_emb, low_emb#, aux_loss
     
@@ -144,7 +167,7 @@ class GIN_decoder(nn.Module):
             self.layers.append(GINConv(nn.Linear(hidden_dim, hidden_dim), train_eps=True))
         self.high_mlp = nn.Linear(hidden_dim, 2)
         self.low_mlp = nn.Linear(hidden_dim, 1)
-        self.alpha = nn.Parameter(torch.tensor(1.0))  
+        self.alpha = nn.Parameter(torch.tensor(0.0))  
 
     def forward(self, high_emb, high_graph, low_emb, low_graph):
         for i in range(len(self.layers)):
@@ -153,7 +176,7 @@ class GIN_decoder(nn.Module):
         high_emb = F.dropout(high_emb, p=0.5, training=self.training)
         low_emb = F.dropout(low_emb, p=0.5, training=self.training)
         high_emb = self.high_mlp(high_emb)
-        low_emb = self.low_mlp(low_emb)
+        low_emb = torch.abs(self.low_mlp(low_emb))
         alpha = torch.sigmoid(self.alpha)
         return high_emb, low_emb, alpha
  
