@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import Tensor
 import torch.nn as nn
@@ -150,8 +152,21 @@ class GINE(nn.Module):
         x = x.relu()
         return x
     
-
-
+class CrossMessagePassing(nn.Module):
+    def __init__(self, d):
+        super(CrossMessagePassing, self).__init__()
+        self.Q = nn.Linear(d, d, bias = False)
+        self.K = nn.Linear(d, d, bias = False)
+        self.V = nn.Linear(d, d, bias = False)
+        self.d = math.sqrt(d)
+        
+    def forward(self, to_emb, from_emb):
+        Q = self.Q(to_emb)
+        K = self.K(from_emb)
+        V = self.V(to_emb)
+        weights = (Q*K).sum(1)/self.d
+        return weights.view(to_emb.shape[0],1)*V
+    
 class PNA(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(PNA, self).__init__()
@@ -169,43 +184,56 @@ class MultiLevelGraphLayer(nn.Module):
         self.multi_head = nn.MultiheadAttention(input_dim, num_heads, batch_first=True)
         self.conv_low = TransformerConv(input_dim, output_dim // num_heads, heads=num_heads)
         # self.conv = GPSConv(input_dim, GINConv(nn.Linear(input_dim, output_dim), train_eps=True), heads=num_heads)
-        self.batch_norm = nn.LayerNorm(output_dim)
+        self.norm = nn.LayerNorm(output_dim)
         self.cross_message_passing = cross_message_passing
-        self.attn_fclh = nn.Linear(output_dim * 2, 1, bias=False)
-        self.attn_fchl = nn.Linear(output_dim * 2, 1, bias=False)
+        # self.attn_fclh = nn.Linear(output_dim * 2, 1, bias=False)
+        # self.attn_fchl = nn.Linear(output_dim * 2, 1, bias=False)
+        self.cross_lh = CrossMessagePassing(output_dim)
+        self.cross_hl = CrossMessagePassing(output_dim)
 
     def forward(self, high_emb_in, high_level_graph, low_emb_in, low_level_graphs):
-        high_emb = self.batch_norm(high_emb_in)
-        low_emb = self.batch_norm(low_emb_in)
+        high_emb = self.norm(high_emb_in)
+        low_emb = self.norm(low_emb_in)
 
         high_emb_gin = self.conv_high(high_emb, high_level_graph.edge_index)
         high_emb_mh, _ = self.multi_head(high_emb, high_emb, high_emb)
-        high_emb = high_emb_mh + high_emb_gin + high_emb_in
+        high_emb = high_emb_mh + high_emb_gin #+ high_emb_in
         
-        low_emb = self.conv_low(low_emb, low_level_graphs.edge_index) + low_emb_in
+        low_emb = self.conv_low(low_emb, low_level_graphs.edge_index) #+ low_emb_in
         
         if(self.cross_message_passing):
-            _high_emb = high_emb#.clone().requires_grad_()
+            # _high_emb = high_emb#.clone().requires_grad_()
             x = global_mean_pool(low_emb, low_level_graphs.batch)
-            sim_score = torch.sigmoid(self.attn_fclh(torch.cat([_high_emb, x], dim=1)))
-            _high_emb = sim_score * _high_emb + (1 - sim_score) * x
-            
-            # Gather high_emb[i] for each node in low_emb using the batch vector
             high_emb_per_node = high_emb[low_level_graphs.batch]  # (N_low_nodes, output_dim)
-            # concat = torch.stack([low_emb, high_emb_per_node], dim=1)  # [N, 2, d_model]
-            # scores = self.attn_fchl(concat.view(concat.shape[0], -1))  # [N, 1]
-            # alpha = torch.softmax(torch.cat([scores, -scores], dim=1), dim=1)  # [N, 2]
-            # # alpha = torch.softmax(self.attn_fchl(concat.view(concat.shape[0], -1)), dim=1)  # [N, 2]
-            # updated_low_emb = alpha[:, 0:1] * low_emb + alpha[:, 1:2] * high_emb_per_node
+            _high_emb = self.cross_hl(high_emb, x)
+            updated_low_emb = self.cross_lh(low_emb, high_emb_per_node)
+            # sim_score = torch.softmax(self.attn_fclh(torch.cat([_high_emb, x], dim=1)), dim=1)
+            # _high_emb = sim_score[:,0].view(high_level_graph.num_nodes,1) * _high_emb + sim_score[:,1].view(high_level_graph.num_nodes,1)  * x
+            # high_emb_per_node = high_emb[low_level_graphs.batch]  # (N_low_nodes, output_dim)
+            # concat_hl = torch.cat([low_emb, high_emb_per_node], dim=1)  # (N_low_nodes, 2 * output_dim)
+            # attn_scores_low = torch.softmax(self.attn_fchl(concat_hl), dim=1)  # (N_low_nodes, 1)
+            # updated_low_emb = attn_scores_low[:,0].view(low_level_graphs.num_nodes,1) * low_emb + attn_scores_low[:,1].view(low_level_graphs.num_nodes,1) * high_emb_per_node  # (N_low_nodes, output_dim)
+            
+            # sim_score = torch.sigmoid(self.attn_fclh(torch.cat([_high_emb, x], dim=1)))
+            # _high_emb = sim_score * _high_emb + (1 - sim_score) * x
+            
+            # # Gather high_emb[i] for each node in low_emb using the batch vector
+            # high_emb_per_node = high_emb[low_level_graphs.batch]  # (N_low_nodes, output_dim)
+            # # concat = torch.stack([low_emb, high_emb_per_node], dim=1)  # [N, 2, d_model]
+            # # scores = self.attn_fchl(concat.view(concat.shape[0], -1))  # [N, 1]
+            # # alpha = torch.softmax(torch.cat([scores, -scores], dim=1), dim=1)  # [N, 2]
+            # # # alpha = torch.softmax(self.attn_fchl(concat.view(concat.shape[0], -1)), dim=1)  # [N, 2]
+            # # updated_low_emb = alpha[:, 0:1] * low_emb + alpha[:, 1:2] * high_emb_per_node
 
-            # Concatenate high_emb and low_emb
-            concat_hl = torch.cat([low_emb, high_emb_per_node], dim=1)  # (N_low_nodes, 2 * output_dim)
+            # # Concatenate high_emb and low_emb
+            # concat_hl = torch.cat([low_emb, high_emb_per_node], dim=1)  # (N_low_nodes, 2 * output_dim)
 
-            # Compute attention scores in batch
-            attn_scores_low = torch.sigmoid(self.attn_fchl(concat_hl)+1)  # (N_low_nodes, 1)
+            # # Compute attention scores in batch
+            # attn_scores_low = torch.sigmoid(self.attn_fchl(concat_hl)+1)  # (N_low_nodes, 1)
 
-            # Weighted update
-            updated_low_emb = attn_scores_low * low_emb + (1 - attn_scores_low) * high_emb_per_node  # (N_low_nodes, output_dim)
+            # # Weighted update
+            # updated_low_emb = attn_scores_low * low_emb + (1 - attn_scores_low) * high_emb_per_node  # (N_low_nodes, output_dim)
+            # import pdb; pdb.set_trace()
             return F.gelu(_high_emb), F.gelu(updated_low_emb)#, aux_loss_high+aux_loss_low
         else:
             return F.gelu(high_emb), F.gelu(low_emb)

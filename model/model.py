@@ -29,19 +29,18 @@ def get_dirichlet_energy_normalised(hidden, edge_index):
     return torch.sqrt(global_mean_pool(neigh_sum, batch=batch)).cpu().detach().item()
 
 class GraphEncoder(nn.Module):
-    def __init__(self, pe_dim, init_dim, hidden_dim, output_dim, num_layers, num_heads, cross_message_passing, positional_encoding, anchor_pe, blending):
+    def __init__(self, pe_dim, init_dim, hidden_dim, output_dim, num_layers, num_heads, cross_message_passing, positional_encoding, blending):
         super(GraphEncoder, self).__init__()
         self.blending = blending
         self.pe_dim = pe_dim
         self.cross_message_passing, self.positional_encoding = cross_message_passing, positional_encoding
-        if anchor_pe:
-            self.pe_fn = calculate_anchor_pe
+        self.pe_fn = calculate_sinusoidal_pe
+        if(self.positional_encoding):
+            self.mlp_high = nn.Sequential(nn.Linear(2 + self.pe_dim, init_dim), nn.GELU())
+            self.mlp_low = nn.Sequential(nn.Linear(1 + self.pe_dim, init_dim), nn.GELU())
         else:
-            self.pe_fn = calculate_sinusoidal_pe
-        
-        self.mlp_high = nn.Sequential(nn.Linear(2 + self.pe_dim, init_dim), nn.GELU())
-        self.mlp_low = nn.Sequential(nn.Linear(1 + self.pe_dim, init_dim), nn.GELU())
-        
+            self.mlp_high = nn.Sequential(nn.Linear(2, init_dim), nn.GELU())
+            self.mlp_low = nn.Sequential(nn.Linear(1, init_dim), nn.GELU())
         self.convs = nn.ModuleList()
 
         self.convs.append(MultiLevelGraphLayer(init_dim, hidden_dim, num_heads, self.cross_message_passing))
@@ -51,6 +50,7 @@ class GraphEncoder(nn.Module):
         
         # Final layer
         self.convs.append(MultiLevelGraphLayer(hidden_dim, output_dim, num_heads, self.cross_message_passing))
+        self.norm = nn.LayerNorm(output_dim)
 
         self.projection_head = nn.Sequential(nn.Linear(output_dim, output_dim), nn.GELU())
         self.beta = nn.Parameter(torch.tensor(0.0))  
@@ -61,6 +61,33 @@ class GraphEncoder(nn.Module):
         if high_mask is not None and low_mask is not None:
             high_level_graph.X = high_level_graph.X * high_mask
             low_level_graphs.X = low_level_graphs.X * low_mask
+    
+        if(self.positional_encoding):
+            high_level_graph, low_level_graphs = self.pe_fn(high_level_graph, low_level_graphs, self.pe_dim)
+            high_level_graph.pe = high_level_graph.pe.to(high_level_graph.X.device)
+            low_level_graphs.pe = low_level_graphs.pe.to(high_level_graph.X.device)
+        
+            high_emb_in = torch.cat([high_level_graph.X.float(), high_level_graph.pe.float()], 1)
+            low_emb_in = torch.cat([low_level_graphs.X.float(), low_level_graphs.pe.float()], 1)
+        else:
+            high_emb_in = high_level_graph.X.float()
+            low_emb_in = low_level_graphs.X.float()
+        high_emb_in, low_emb_in = self.mlp_high(high_emb_in), self.mlp_low(low_emb_in)
+        if self.blending:
+            high_emb_in, low_emb_in = self.hierarchical_blending(high_emb_in, low_emb_in, low_level_graphs.batch)# -> tuple
+        high_emb, low_emb= self.convs[0](high_emb_in, high_level_graph, low_emb_in, low_level_graphs)
+
+        for i, layer in enumerate(self.convs[1:]):
+            high_emb_new, low_emb_new = layer(high_emb, high_level_graph, low_emb, low_level_graphs)
+            
+            high_emb = high_emb_new + high_emb
+            low_emb = low_emb_new + low_emb
+        # high_emb, low_emb = self.convs[-1](high_emb+high_emb_in, high_level_graph, low_emb+low_emb_in, low_level_graphs)
+        return self.norm(high_emb), self.norm(low_emb)#, aux_loss
+
+    def encode(self, high_level_graph, low_level_graphs, gene_mask = None):
+        if gene_mask is not None:
+            low_level_graphs.X = low_level_graphs.X * gene_mask
     
         if(self.positional_encoding):
             high_level_graph, low_level_graphs = self.pe_fn(high_level_graph, low_level_graphs, self.pe_dim)
@@ -83,39 +110,8 @@ class GraphEncoder(nn.Module):
             high_emb = high_emb_new + high_emb
             low_emb = low_emb_new + low_emb
         # high_emb, low_emb = self.convs[-1](high_emb+high_emb_in, high_level_graph, low_emb+low_emb_in, low_level_graphs)
-        return high_emb, low_emb#, aux_loss
+        return self.norm(high_emb), self.norm(low_emb)#, aux_loss
 
-    def encode(self, high_level_graph, low_level_graphs, gene_mask = None):
-        if gene_mask is not None:
-            low_level_graphs.X = low_level_graphs.X * gene_mask
-    
-        if(self.positional_encoding):
-            high_level_graph, low_level_graphs = self.pe_fn(high_level_graph, low_level_graphs, self.pe_dim)
-            high_level_graph.pe = high_level_graph.pe.to(high_level_graph.X.device)
-            low_level_graphs.pe = low_level_graphs.pe.to(high_level_graph.X.device)
-        
-            high_emb_in = torch.cat([high_level_graph.X.float(), high_level_graph.pe.float()], 1)
-            low_emb_in = torch.cat([low_level_graphs.X.float(), low_level_graphs.pe.float()], 1)
-        else:
-            high_emb = high_level_graph.X.float()
-            low_emb = low_level_graphs.X.float()
-
-        if self.blending:
-            high_emb, low_emb = self.hierarchical_blending(high_emb, low_emb, low_level_graphs.batch)# -> tuple
-        import pdb; pdb.set_trace()
-        high_emb_in, low_emb_in = self.mlp_high(high_emb_in), self.mlp_low(low_emb_in)
-        import pdb; pdb.set_trace()
-        high_emb, low_emb= self.convs[0](high_emb_in, high_level_graph, low_emb_in, low_level_graphs)
-        import pdb; pdb.set_trace()
-
-        for i, layer in enumerate(self.convs[1:]):
-            high_emb_new, low_emb_new = layer(high_emb, high_level_graph, low_emb, low_level_graphs)
-            
-            high_emb = high_emb_new + high_emb
-            low_emb = low_emb_new + low_emb
-        import pdb; pdb.set_trace()
-
-        return high_emb, low_emb#, aux_loss
     
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
@@ -132,7 +128,7 @@ class MLP(nn.Module):
             self.layers.append(nn.Linear(hidden_dim, output_dim))
     
     def forward(self, X):
-        X = self.bn(X)
+        # X = self.bn(X)
         for i in range(len(self.layers)-1):
             X = F.relu(self.layers[i](X))
         return self.layers[-1](X)

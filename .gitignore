@@ -21,3 +21,7 @@ eval_melanoma.sh
 eval_space_gm.sh
 graphmae.sh
 main_ddp.sh
+calculate_rep_merfish_lung.py
+calculate_rep_spacegm.py
+playground.ipynb
+main_ddp_modular.py

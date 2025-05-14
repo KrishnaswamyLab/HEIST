@@ -37,6 +37,7 @@ parser.add_argument('--wd', type=float, default=1e-4, help="Weight decay")
 parser.add_argument('--num_epochs', type=int, default=1000, help="Number of epochs")
 parser.add_argument('--gpu', type=int, default=0, help="GPU index")
 parser.add_argument('--model_type', type=str, default='GIN', choices=['MLP', 'GIN'], help="Model type to train (MLP or GIN)")
+parser.add_argument('--model_name', type=str)
 
 
 def initialize_weights(layer):
@@ -107,8 +108,8 @@ def train(model, train_loader, val_loader, test_loader):
             train_roc = eval_roc_auc(model, train_loader)
             val_acc = eval(model, val_loader)
             val_roc = eval_roc_auc(model, val_loader)
-            best_roc_auc = max(best_roc_auc, eval_roc_auc(model, test_loader))
             if val_roc>= best_val_roc:
+                best_roc_auc = max(best_roc_auc, eval_roc_auc(model, test_loader))
                 best_val_roc = val_roc
                 best_test_acc = eval(model, test_loader)
             tq.set_description("Loss = %.4f, Train acc = %.4f, Train roc = %.4f, Val acc = %.4f, Val roc = %.4f, Best val roc = %.4f, Best acc = %.4f, Best ROC AUC score = %.4f" % (loss.item(), train_acc, train_roc, val_acc, val_roc, best_val_roc, best_test_acc, best_roc_auc))
@@ -123,9 +124,10 @@ INPUT_DIM_HIGH = 2
 INPUT_DIM_LOW = 1
 
 if __name__ == '__main__':
-    print(args)
-    print("Loading graphs")
-    _high_level_graphs = torch.load('data/space-gm/{}_graphs_model_sea_pe_concat_no_cross.pt'.format(args.data_name))
+    print("================================")
+    print(f"Tissue classification {args.data_name} {args.label_name}")
+    print("================================")
+    _high_level_graphs = torch.load(f"data/space-gm/"+args.data_name+f"_graphs_{'_'.join(args.model_name.split('_')[1:])}.pt")
     # _high_level_graphs = torch.load('data/space-gm/{}_graphs_anchor_ranknorm_pe.pt'.format(args.data_name))
     if(args.data_name == "charville"):
         split = [["c002"], ["c004"]]
@@ -153,7 +155,7 @@ if __name__ == '__main__':
     
     roc_scores = []
 
-    for fold in range(10):
+    for fold in range(2):
         model = MLP(embeddings.shape[1], args.hidden_dim, 2, args.num_layers).to(args.device)
         if(args.data_name == "dfci"):
             train_idx, test_idx = train_test_split(np.arange(embeddings.shape[0]), test_size = 0.2, stratify= labels.cpu().numpy(), random_state = 107)

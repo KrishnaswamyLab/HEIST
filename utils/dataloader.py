@@ -49,61 +49,63 @@ class EmbeddingDataset(Dataset):
 
 def create_dataloader(graphs, batch_size, permute = True):
     high_level_graph = graphs[0]
-    if 'weight' not in high_level_graph:
-        high_level_graph.weight = high_level_graph.distance
     num_nodes = high_level_graph.num_nodes
-    # transform = T.AddLaplacianEigenvectorPE(k=pe_dim, attr_name='pe')
-    # high_level_graph = transform(high_level_graph)
-    # transform = T.AddLaplacianEigenvectorPE(k=pe_dim, attr_name='pe')
-    low_level_graphs = graphs[1:]#[transform(i) for i in graphs[1:]]
+    low_level_graphs = graphs[1:]
+
+    # Assign default edge weights if missing
     for idx in range(len(low_level_graphs)):
         if 'weight' not in low_level_graphs[idx] or low_level_graphs[idx].edge_attr is None:
             num_edges = low_level_graphs[idx].edge_index.size(1)
             low_level_graphs[idx].weight = torch.ones((num_edges, 1), dtype=torch.float)
 
+    # Shuffle node indices if required
     if permute:
         high_level_graph, perm = shuffle_node_indices(high_level_graph)
 
+    # Convert high-level graph to NetworkX for partitioning
     G = to_networkx(high_level_graph, to_undirected=True)
 
-    num_partitions = math.ceil(num_nodes/batch_size)
-    if(num_partitions):
-        adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
-        _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
+    # Partitioning using Metis
+    num_partitions = math.ceil(num_nodes / batch_size)
+    adjacency_list = [list(G.neighbors(node)) for node in range(G.number_of_nodes())]
+    _, node_partitions = pymetis.part_graph(num_partitions, adjacency=adjacency_list)
 
-    # Step 4: Create partitions from node_partitions
-        partitions = [[] for _ in range(num_partitions)]
-        for node_idx, part_idx in enumerate(node_partitions):
-            partitions[part_idx].append(node_idx)
-    else:
-        partitions = [list(range(num_nodes))]
-    # Step 5: Create high-level subgraphs and low-level batches for each partition
+    # Create partitions
+    partitions = [[] for _ in range(num_partitions)]
+    for node_idx, part_idx in enumerate(node_partitions):
+        partitions[part_idx].append(node_idx)
+
+    # Create high-level subgraphs and low-level batches for each partition
     partitioned_batches = []
-
-    for i,partition_node_indices in enumerate(partitions):
-        # Create high-level subgraph for the current partition
+    for partition_node_indices in partitions:
         partition_node_indices = torch.tensor(partition_node_indices, dtype=torch.long)
         edge_index_partition, _ = subgraph(partition_node_indices, high_level_graph.edge_index, relabel_nodes=True)
 
         high_level_subgraph = Data(
             X=high_level_graph.X[partition_node_indices],
-            # pe=high_level_graph.pe[partition_node_indices],
             edge_index=edge_index_partition,
             y=high_level_graph.y[partition_node_indices] if high_level_graph.y is not None else None,
-            num_nodes=len(partition_node_indices)
+            num_nodes=len(partition_node_indices),
+            train_mask=high_level_graph.train_mask[partition_node_indices] if hasattr(high_level_graph, "train_mask") else None,
+            test_mask=high_level_graph.test_mask[partition_node_indices] if hasattr(high_level_graph, "train_mask") else None,
+            val_mask=high_level_graph.val_mask[partition_node_indices] if hasattr(high_level_graph, "train_mask") else None,
         )
 
-        # Collect corresponding low-level graphs for each node in the partition
+        # Assign corresponding low-level graphs
         if permute:
             corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in perm[partition_node_indices]]
         else:
             corresponding_low_level_graphs = [low_level_graphs[node_idx] for node_idx in partition_node_indices]
-
+        try:
         # Create a batch from low-level graphs
-        low_level_batch = Batch.from_data_list(corresponding_low_level_graphs)
+            low_level_batch = Batch.from_data_list(corresponding_low_level_graphs)
+        except KeyError as e:
+            # print(f"[Rank {rank}] Caught KeyError in low-level batch creation: {e}", flush=True)
+            # print(f"[Rank {rank}] Low-level graphs: {corresponding_low_level_graphs}", flush=True)
+            # raise  
+            raise
         # Store high-level subgraph and corresponding low-level batch
         partitioned_batches.append((high_level_subgraph, low_level_batch, partition_node_indices))
-
     # Step 6: Define DataLoader for batched subgraphs
     batch_size = 1
     dataloader = DataLoader(partitioned_batches, batch_size=batch_size, shuffle=True)
