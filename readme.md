@@ -101,7 +101,3 @@ This script will:
 
 * Evaluation results will be stored in the corresponding directories or logged to the console.
 * Ensure that the trained model checkpoint is available and named correctly (default: `HEIST`).
-
----
-
-Let me know if you’d like me to explicitly include expected output locations or metrics computed during evaluation!
