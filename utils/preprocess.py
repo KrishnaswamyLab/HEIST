@@ -49,17 +49,24 @@ for cell_type, cell_data in tqdm(cell_type_dict.items()):
     gene_names = cell_data.var.index.tolist()
 
     G = nx.Graph()
-    
+    G.add_nodes_from(np.arange(X_dense.shape[1]))
+    edges = []
+    MIs = []
     for gene_idx_1, gene_idx_2 in combinations(range(X_dense.shape[1]), 2):
-        gene_data_1 = X_dense[:, gene_idx_1]
-        gene_data_2 = X_dense[:, gene_idx_2]
-
-        mi = mutual_info_regression(gene_data_1.reshape(-1, 1), gene_data_2)[0]
-
-        if mi > 0.35: #thresholding
-            G.add_edge(gene_idx_1, gene_idx_2, weight=mi)
-            G.add_edge(gene_idx_2, gene_idx_1, weight=mi)
-
+    gene_data_1 = X_dense[:, gene_idx_1]
+    gene_data_2 = X_dense[:, gene_idx_2]
+    if len(gene_data_1) >= 3 and len(gene_data_2) >= 3:
+        mi = mutual_info_regression(gene_data_1.reshape(-1, 1), gene_data_2, n_neighbors=2)[0]
+        edges.append([gene_idx_1, gene_idx_2])
+        MIs.append(mi)
+    MIs = np.array(MIs)
+    edges = np.array(edges)
+    selected = np.where(MIs>(MIs.mean()))[0]
+    MIs = MIs[selected]
+    edges = edges[selected]
+    for m,edge in enumerate(edges):
+        G.add_edge(edge[0], edge[1], weight=MIs[m])
+    G = G.to_undirected()
     gene_network_dict[cell_type] = G
     
 for k in gene_network_dict:
