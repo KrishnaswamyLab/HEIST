@@ -1,7 +1,7 @@
 
 # 📚 **HEIST**
 
-This project implements a distributed training pipeline for learning representations over spatial cell graphs using PyTorch, PyTorch Geometric, and Distributed Data Parallel (DDP).
+Official repo for HEIST
 
 ---
 
